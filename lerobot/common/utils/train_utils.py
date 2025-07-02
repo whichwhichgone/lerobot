@@ -15,6 +15,7 @@
 # limitations under the License.
 import logging
 from pathlib import Path
+from typing import Callable
 
 from termcolor import colored
 from torch.optim import Optimizer
@@ -74,6 +75,7 @@ def save_checkpoint(
     policy: PreTrainedPolicy,
     optimizer: Optimizer,
     scheduler: LRScheduler | None = None,
+    accelerator: Callable | None = None,
 ) -> None:
     """This function creates the following directory structure:
 
@@ -96,10 +98,23 @@ def save_checkpoint(
         optimizer (Optimizer | None, optional): The optimizer to save the state from. Defaults to None.
         scheduler (LRScheduler | None, optional): The scheduler to save the state from. Defaults to None.
     """
-    pretrained_dir = checkpoint_dir / PRETRAINED_MODEL_DIR
-    policy.save_pretrained(pretrained_dir)
-    cfg.save_pretrained(pretrained_dir)
-    save_training_state(checkpoint_dir, step, optimizer, scheduler)
+    if not accelerator:
+        pretrained_dir = checkpoint_dir / PRETRAINED_MODEL_DIR
+        policy.save_pretrained(pretrained_dir)
+        cfg.save_pretrained(pretrained_dir)
+        save_training_state(checkpoint_dir, step, optimizer, scheduler)
+    else:
+        pretrained_dir = checkpoint_dir / PRETRAINED_MODEL_DIR
+        accelerator.wait_for_everyone()
+        unwrap_policy = accelerator.unwrap_model(policy)
+        unwrap_policy.save_pretrained(
+            pretrained_dir,
+            is_main_process=accelerator.is_main_process,
+            save_function=accelerator.save,
+        )
+        if accelerator.is_main_process:
+            cfg.save_pretrained(pretrained_dir)
+        save_training_state(checkpoint_dir, step, optimizer, scheduler, accelerator)
 
 
 def save_training_state(
@@ -107,6 +122,7 @@ def save_training_state(
     train_step: int,
     optimizer: Optimizer | None = None,
     scheduler: LRScheduler | None = None,
+    accelerator: Callable | None = None,
 ) -> None:
     """
     Saves the training step, optimizer state, scheduler state, and rng state.
@@ -119,18 +135,26 @@ def save_training_state(
         scheduler (LRScheduler | None, optional): The scheduler from which to save the state_dict.
             Defaults to None.
     """
-    save_dir = checkpoint_dir / TRAINING_STATE_DIR
-    save_dir.mkdir(parents=True, exist_ok=True)
-    save_training_step(train_step, save_dir)
-    save_rng_state(save_dir)
-    if optimizer is not None:
-        save_optimizer_state(optimizer, save_dir)
-    if scheduler is not None:
-        save_scheduler_state(scheduler, save_dir)
+    if not accelerator:
+        save_dir = checkpoint_dir / TRAINING_STATE_DIR
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_training_step(train_step, save_dir)
+        save_rng_state(save_dir)
+        if optimizer is not None:
+            save_optimizer_state(optimizer, save_dir)
+        if scheduler is not None:
+            save_scheduler_state(scheduler, save_dir)
+    else:
+        if accelerator.is_main_process:
+            save_dir = checkpoint_dir / TRAINING_STATE_DIR
+            save_dir.mkdir(parents=True, exist_ok=True)
+            save_training_step(train_step, save_dir)
+            save_rng_state(save_dir)
+        accelerator.save_state(save_dir)
 
 
 def load_training_state(
-    checkpoint_dir: Path, optimizer: Optimizer, scheduler: LRScheduler | None
+    checkpoint_dir: Path, optimizer: Optimizer, scheduler: LRScheduler | None, accelerator: Callable | None = None
 ) -> tuple[int, Optimizer, LRScheduler | None]:
     """
     Loads the training step, optimizer state, scheduler state, and rng state.
@@ -148,14 +172,23 @@ def load_training_state(
         tuple[int, Optimizer, LRScheduler | None]: training step, optimizer and scheduler with their
             state_dict loaded.
     """
-    training_state_dir = checkpoint_dir / TRAINING_STATE_DIR
-    if not training_state_dir.is_dir():
-        raise NotADirectoryError(training_state_dir)
+    if not accelerator:
+        training_state_dir = checkpoint_dir / TRAINING_STATE_DIR
+        if not training_state_dir.is_dir():
+            raise NotADirectoryError(training_state_dir)
 
-    load_rng_state(training_state_dir)
-    step = load_training_step(training_state_dir)
-    optimizer = load_optimizer_state(optimizer, training_state_dir)
-    if scheduler is not None:
-        scheduler = load_scheduler_state(scheduler, training_state_dir)
+        load_rng_state(training_state_dir)
+        step = load_training_step(training_state_dir)
+        optimizer = load_optimizer_state(optimizer, training_state_dir)
+        if scheduler is not None:
+            scheduler = load_scheduler_state(scheduler, training_state_dir)
 
-    return step, optimizer, scheduler
+        return step, optimizer, scheduler
+    else:
+        training_state_dir = checkpoint_dir / TRAINING_STATE_DIR
+        if not training_state_dir.is_dir():
+            raise NotADirectoryError(training_state_dir)
+
+        load_rng_state(training_state_dir)
+        step = load_training_step(training_state_dir)
+        return step, training_state_dir
