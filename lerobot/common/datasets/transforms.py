@@ -203,6 +203,11 @@ class ImageTransformsConfig:
                 type="SharpnessJitter",
                 kwargs={"sharpness": (0.5, 1.5)},
             ),
+            "random_resize_crop": ImageTransformConfig(
+                weight=1.0,
+                type="RandomResizedCrop",
+                kwargs={"size": (224, 224), "scale": (0.85, 0.85)},
+            ),
         }
     )
 
@@ -214,6 +219,8 @@ def make_transform_from_config(cfg: ImageTransformConfig):
         return v2.ColorJitter(**cfg.kwargs)
     elif cfg.type == "SharpnessJitter":
         return SharpnessJitter(**cfg.kwargs)
+    elif cfg.type == "RandomResizedCrop":
+        return v2.RandomResizedCrop(**cfg.kwargs)
     else:
         raise ValueError(f"Transform '{cfg.type}' is not valid.")
 
